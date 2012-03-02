@@ -1,7 +1,6 @@
-#! /usr/bin/env python
+#! /usr/bin/env python -3
 
 import socket
-import threading
 import signal
 import urllib
 import os.path
@@ -12,18 +11,24 @@ import base64
 import struct
 from datetime import datetime
 
-listenport = 8080
-listenhost = ""
 interrupted = False	#Let it handle a ctrl-c
-basedir = "/Users/finity/Documents/Code/DistSysProj2/testroot/"	#Temporarily store the basedir here
-errorfile = "/Users/finity/Documents/Code/DistSysProj2/404.html"
-dirhtmlfile = "/Users/finity/Documents/Code/DistSysProj2/dir.html"
+settings = {
+	"listenport": 8080,
+	"listenhost": "",
+	"basedir": "/Users/finity/Documents/Code/DistSysProj2/testroot/",	#Store the basedir here
+	"errorfile": "/Users/finity/Documents/Code/DistSysProj2/404.html",
+	"dirhtmlfile": "/Users/finity/Documents/Code/DistSysProj2/dir.html"
+}
 
 def main():
 	"""Main program, kicks off other execution.  Setup for execution at end of file."""
-	global listenport, listenhost
+	global settings
 	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)	#Setup an ipv4 TCP socket
-	s.bind((listenhost, listenport))
+	try:
+		s.bind((settings["listenhost"], settings["listenport"]))
+	except socket.error:	#Happens when the interface is already bound
+		print "Could not setup listening socket.  Interface is probably already bound."	#TODO:better msg
+		return
 	s.listen(1)	#Start listening for a connection
 
 	signal.signal(signal.SIGINT, sigint_handler)	#Setup the handler for ctrl-c
@@ -31,15 +36,64 @@ def main():
 	while not interrupted:
 		try:
 			conn, addr = s.accept()	#Block while waiting for a connection
+			conn.settimeout( 5 )	#Set a blocking timeout of 5 seconds for the recvd conn
 			print "Connection received from: ", addr
-			handler = HandleConn(conn, addr)
+			handler = HandleConn(settings, conn, addr)
 			handler.start()
 		except socket.error:	#accept will throw this when someone hits ctrl-c - ignore it
 			pass
 	s.close()
 
+import tempfile, shutil
+
+class FileWriter():
+	_tempfile = None
+
+	def __init__(self, filepath, filesize):
+		self._filepath = filepath
+		self._filesize = int(filesize)
+		self._writtenDat = 0	#This will track how much data has been written to the file
+		self._tempfile = tempfile.TemporaryFile()	#Open up a temporary file
+
+	def checkSize(self):	#see if we're at our goal size
+		status = False
+		if self._writtenDat == self._filesize:
+			status = True
+		return status
+
+	def testSize(self):	#Return 1 if we've got too much, 0 for just right, -1 for not enough data
+		retval = 0
+		if self._writtenDat > self._filesize:	#We've written too much data
+			retval = 1
+		elif self._writtenDat == self._filesize:	#We've written exactly the right amount
+			retval = 0
+		else:	#More data is still needed
+			retval = -1
+		return retval
+
+	def append(self, data):
+		if self._tempfile is not None:
+			self._tempfile.write(data)
+			self._writtenDat += len(data)
+		else:
+			pass	#TODO: throw an error
+
+	def finish(self):
+		if self._tempfile is not None and self.testSize() == 0:	#If there's a tempfile, and we've got all data
+			self._tempfile.seek(0)	#Jump back to the beginning of tempfile
+			if not os.path.exists(self._filepath):
+				with open(self._filepath, 'wb') as f:	#Open up the output file
+					shutil.copyfileobj(self._tempfile, f)
+			else:
+				pass	#TODO: throw an error
+			self._tempfile.close()
+			self._tempfile = None
+		else:
+			pass	#TODO: throw an error
+
 class HandleWebsocket():
 	"""Handle a websocket connection"""
+	#These are the possible opcodes
 	OP_CONT = 0x0	#Continuation
 	OP_TEXT = 0x1	#Text frame
 	OP_BIN = 0x2	#Binary frame
@@ -53,23 +107,116 @@ class HandleWebsocket():
 		self._addr = addr
 		self._url = url
 		self._filename = filename
+		self._curbuf=bytearray()	#Store the buffer of received bytes
+
+	def new_handle_websocket(self):
+		#These are the receiver states
+		ST_FILESIZE = "wait for filesize"
+		ST_FILESEGM = "waiting for file segment metadata"
+		ST_FILESEGD = "waiting for file segment data"
+		ST_CLOSE = "close the connection"
+		ST_FINISH = "file finish command received"
+	
+		header = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n" + \
+			"Connection: Upgrade\r\nSec-WebSocket-Accept: " + self._url.gen_ws_accept_key() + "\r\n\r\n"
+		self._conn.send(header)
+		filewtr = None
+		filesize = None
+		state = ST_FILESIZE	#Next, wait for the file size
+		while state != ST_CLOSE:
+			opcode, data = self.get_frame()	#Get a frame
+			if opcode == self.OP_PING:	#Handle a ping in any state
+				self.send_msg(data, self.OP_PONG)
+			elif state == ST_FILESIZE:	#We're looking for the filesize data
+				if opcode == self.OP_TEXT and "Filesize: " in data:
+					try:	#The integer conversion will throw a value error if this is an invalid string
+						filesize = int(data.__str__().replace("Filesize: ", "", 1))
+						if not os.path.isfile(filepath):
+							self.send_msg("Permitted")
+							filewtr = FileWriter(filepath, filesize)
+							state = ST_FILESEGM	#Next, wait for a segment's metadata
+						else:
+							self.send_msg("Not Permitted: -1")	#TODO: more robust error code
+							state = ST_CLOSE
+					except ValueError:
+						pass	#TODO: it was an invalid filesize, so handle an error here
+						state = ST_CLOSE
+				else:
+					pass	#TODO: OPCODE should be text, and "filesize" should be in data, so handle an error here
+					state = ST_CLOSE
+			elif state == ST_FILESEGM:
+				if opcode == self.OP_TEXT:
+					if "File Finish" in data:	#The sender thinks that's the whole file
+						state = ST_FINISH	#Next, handle the closing and end of file
+					elif "Segment Start:" in data:
+						pass	#TODO: I should parse out all the start and finish data here, make sure it makes sense
+						state = ST_FILESEGD	#Next, get some file data
+				else:
+					 pass	#TODO: text is only valid opcode, so handle an error here
+					 state = ST_CLOSE
+			elif state == ST_FILESEGD:
+				if opcode == self.OP_BIN or opcode == self.OP_TEXT:
+					if opcode == self.OP_TEXT:
+						pass	#TODO: handle the case where the file data was sent in a text frame
+					filewtr.append(data)
+					if filewtr.test_size() <= 0:
+						state = FILESEGM	#Next, wait for a segment's metadata
+					else:	#Too much data has already been received
+						self.send_msg("Segment Error: -1")	#TODO: more robust error code
+						state = ST_CLOSE
+				else:
+					pass	#TODO: some invalid opcode rxed, handle the error
+					state = ST_CLOSE
+			elif state == ST_FINISH:
+				if filewtr.test_size() == 0:
+					try:
+						filewtr.finish()
+						self.send_msg("Finished")
+					except:	#TODO: make this more specific
+						self.send_msg("Finish Error: -2")	#TODO: more robust
+				else:
+					self.send_msg("Finish Error: -1")	#TODO: more robust error code
+				state = ST_CLOSE
+			else:	#What else could there be?
+				print "Other state somehow"	#TODO: handle some other state
+				state = ST_CLOSE	#Just some kind of error I guess
+		self.send_msg(None, self.OP_CLOS)
+				
 
 	def handle_websocket(self):
 		header = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n" + \
 			"Connection: Upgrade\r\nSec-WebSocket-Accept: " + self._url.gen_ws_accept_key() + "\r\n\r\n"
 		self._conn.send(header)
-		opcode = self.OP_OTH
+		filepath = self._filename
+		filesize = None
+		filewtr = None
 		opcode, data = self.get_frame()
 		while opcode != self.OP_CLOS and opcode is not None:	#opcode is None when the connection is closed
-			if opcode == self.OP_TEXT:
-				print data
-				self.send_msg(data)
 			if opcode == self.OP_PING:
-				print "Ping received!"
 				self.send_msg(data, self.OP_PONG)
-			opcode, data = self.get_frame()
+			elif opcode == self.OP_TEXT:
+				if "Filesize: " in data:
+					filesize = data.__str__().replace("Filesize: ", "", 1)
+					if not os.path.isfile(filepath):
+						self.send_msg("Write Permitted")
+						filewtr = FileWriter(filepath, filesize)
+					else:
+						self.send_msg("File Exists")
+						filepath = None
+						filesize = None
+				else:
+					pass
+			elif opcode == self.OP_BIN and filewtr is not None:
+				filewtr.append(data)
+				if filewtr.checkSize():
+					self.send_msg("Received entire file")
+			else:
+				pass	#TODO: Handle an error or something
+			opcode, data = self.get_frame()	#TODO:implement a timeout
 		if opcode == self.OP_CLOS:	#We got a close request, so close the socket nicely
 			self.send_msg(None, self.OP_CLOS)
+		if filewtr is not None:
+			filewtr.finish()
 
 	def send_msg(self, data, opcode=None):
 		if opcode == None:
@@ -92,44 +239,58 @@ class HandleWebsocket():
 			frame.extend(data)
 		self._conn.send(frame)
 
-	def get_frame(self):
+	def recv_data(self):
+		try:
+			self._curbuf.extend(bytearray(self._conn.recv(4096)))
+		except socket.error:	#This happens with a timeout
+			print "Socket timeout"
+
+	def get_frame(self):	#TODO: now this has a timeout, it'd be good if it was just non-blocking instead
 		"""Get a byte array representing the frame"""
-		bytearr = bytearray(self._conn.recv(2000))	#Wait for a frame TODO: max frame size?
+		self.recv_data()
 		opcode = None
 		data = None
 		#TODO: handle fin set case - namely, if it's not set
-		if len(bytearr) > 2 and self.test_mask(bytearr):	#Test some reasonable requirements
-			opcode = self.get_opcode(bytearr)
-			data = self.get_data(bytearr)
+		if len(self._curbuf) > 2 and self.test_mask(self._curbuf):	#Test some reasonable requirements
+			headerlen = self.get_headerlen(self._curbuf)
+			datalen = self.get_datalen(self._curbuf)
+			framesize = headerlen + datalen
+			while framesize > len(self._curbuf):
+				self.recv_data()
+			frame = self._curbuf[0:framesize]
+			del self._curbuf[0:framesize]
+			opcode = self.get_opcode(frame)
+			data = frame[headerlen:]
+			if self.test_mask(frame):	#If it has got a mask, unmask the data
+				maskpos = headerlen - 4
+				mask = frame[maskpos:(maskpos+4)]
+				for i, byte in enumerate(data):
+					data[i] = byte ^ mask[i%4]	#Perform the unmask
 		return opcode, data
 
-	def get_data(self, bytearr):
-		datalen = self.get_datalen(bytearr)
-		datastart = self.get_headerlen(bytearr)
-		if len(bytearr) != (datalen+datastart):	#TODO: What causes errors here?
-#			print "Size error in get_data bytearr len=", len(bytearr), " sum=", (datalen+datastart), " datalen=", datalen, " datastart=", datastart
-			pass
-		data = bytearr[datastart:(datalen+datastart)]
-		if self.test_mask(bytearr):	#If a mask is set, do the following to unmask
-			maskpos = datastart - 4
-			mask = bytearr[maskpos:(maskpos+4)]
-			for i, byte in enumerate(data):
-				data[i] = byte ^ mask[i%4]	#Actually do the unmask
-		return data
-		
+	def test_mask(self, data):
+		"""Test the mask bit.  Return true if it's set."""
+		val = False
+		if data[1] & 0x80:
+			val = True
+		return val
+
 	def test_fin(self, data):
+		"""Test the fin bit.  Return true if it's set."""
 		val = False
 		if data[0] & 0x80:
 			val = True
 		return val
 
 	def test_rsv(self, data, ind=1):
+		"""Test one rsv bit (one two or three).  Return true if it's set.  They shouldn't be set."""
 		val = False
 		if ind > 1 and ind < 3 and data[0] & (0x80 >> ind):	#bit-and the byte with 0x40, 0x20, or 0x10
 			val = True
 		return val
 
 	def get_opcode(self, data):
+		"""Return the frame opcode."""
 		val = data[0] & 0x0f	#Remove the fin and rsv bits
 		opcode = self.OP_OTH
 		if val == self.OP_CONT: opcode = self.OP_CONT
@@ -141,18 +302,13 @@ class HandleWebsocket():
 		else: opcode = self.OP_OTH
 		return opcode
 
-	def test_mask(self, data):
-		val = False
-		if data[1] & 0x80:
-			val = True
-		return val
-
 	def get_datalen(self, data):
-		length = int(data[1] & 0x7f)	#Remove the mask bit
+		length = data[1] & 0x7f	#Remove the mask bit
+#		print "get_datalen", length
 		if length == 126:	#Bytes 2 and 3 store the length
-			length = struct.unpack(">I", buffer(data[2:4]))
+			length, = struct.unpack(">H", bytes(data[2:4]))	#Weird tuple stuff needed - thus the comma
 		elif length == 127:
-			length = struct.unpack(">Q", buffer(data[2:10]))	#Bytes 2 thru 9 store length
+			length, = struct.unpack(">Q", bytes(data[2:10]))	#Bytes 2 thru 9 store length
 		return length
 
 	def get_headerlen(self, data):
@@ -167,17 +323,21 @@ class HandleWebsocket():
 			headerlen = 10	#Header size with 9 bytes of length
 		return headerlen+maskadd
 
+
+import threading
+
 class HandleConn(threading.Thread):
 	"""Handle a user connection.  This is threaded.  It does its thing and cleans up when done."""
 	HEAD_404 = "404"	#These things tell what type of header to build
 	HEAD_FILE = "file"
 	HEAD_HTML = "html"
 
-	def __init__(self, conn, addr):
+	def __init__(self, settings, conn, addr):
 		"""Setup the handler with a connection and address to handle."""
 		threading.Thread.__init__(self)
 		self._conn = conn
 		self._addr = addr
+		self._settings = settings
 
 	def run(self):
 		"""Handle everything about the connection, clean up when done."""
@@ -187,7 +347,7 @@ class HandleConn(threading.Thread):
 			words = line.split()	#Split a line into words
 			for i, word in enumerate(words):	#Iterate over the words, store index in i
 				if word == "GET" and url is None:	#Set URL, and only allow url to be set once
-					url = URL(words[i+1])
+					url = URL(self._settings, words[i+1])
 					break	#Finish processing this line
 				elif word == "Sec-WebSocket-Key:" and url is not None:	#Test for websockets
 					url.set_ws_key(words[i+1])
@@ -207,6 +367,7 @@ class HandleConn(threading.Thread):
 			print self._addr, " requested directory ", url
 			self.send_dir(filename)
 		elif c == url.URL_WS:	#Request is a websocket request
+			print self._addr, " requested upload ", url	#All websocket requests are uploads
 			ws = HandleWebsocket(self._conn, self._addr, url, filename)
 			ws.handle_websocket()
 		else:	#Some error in classification
@@ -220,7 +381,7 @@ class HandleConn(threading.Thread):
 
 	def send_dir(self, filename):
 		"""Send the user a directory listing."""
-		global dirhtmlfile
+		dirhtmlfile = self._settings["dirhtmlfile"]
 		header = self.build_header(self.HEAD_HTML)	#Build the header
 		jsondata = self.build_dir_json(filename)	#Build the directory listing
 		toappend = "<script type=\"text/javascript\">\nwindow.onload = processData(" \
@@ -229,7 +390,7 @@ class HandleConn(threading.Thread):
 
 	def send_error(self):
 		"""Send the error file.  The only one handled right now is a 404."""
-		global errorfile
+		errorfile = self._settings["errorfile"]
 		header = self.build_header(self.HEAD_404)
 		self.send_file_contents(header, errorfile)
 
@@ -265,8 +426,8 @@ class HandleConn(threading.Thread):
 			JSON Format: { "dirname": "directory name here", "contents":[{"filename":"file name here",
 				 "fileurl":"file url here", "type":"dir, file or other", "dateaccessed":"date created here",
 				 "datemodified":"date modified here", "size":sizebyteshere}] } """
-		global basedir
 		dirlisting = []
+		basedir = self._settings["basedir"]
 		cleandirname = "/" + dirname.replace(basedir, "", 1).strip("/ ")	#Ready dir name for output, remove basedir
 		if cleandirname != "/":	#Do some things if we're not in the root dir
 			cleandirname += "/"	#Append a / to the name for filename construction
@@ -319,8 +480,9 @@ class URL():
 	_websocket = None	#This var stores whether this was a websocket url or not
 	_key = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"	#This is the protocol's magic value
 
-	def __init__(self, urlString=""):
+	def __init__(self, settings, urlString=""):
 		self._urlString = urlString
+		self._settings = settings
 
 	def is_empty(self):
 		return self._urlString == ""
@@ -333,21 +495,20 @@ class URL():
 	
 	#TODO: Test for bugs in the classification
 	def resolve(self):
-		parsed = urllib.unquote_plus(self._urlString)
-		filename = None
+		filename = self.build_filename()
 		response = self.URL_ERR
-		if self.validate_contents(parsed):	#Make sure the url contains only permitted chars
-			filename = self.build_filename(parsed)
-			if self.get_ws_key() is not None:
-				response = self.URL_WS	#Being a websocket overrides others for now.  Don't check for file presence
-			if not os.path.exists(filename):	#See if the file/directory referenced exists
-				filename = None
-			elif os.path.isfile(filename):
-				response = self.URL_FILE
-			elif os.path.isdir(filename):
-				response = self.URL_DIR
-			else:
-				response = self.URL_ERR
+		if filename is None:
+			pass	#This happens when the URL was invalid
+		elif self.get_ws_key() is not None:
+			response = self.URL_WS	#Being a websocket overrides others for now.  Don't check for file presence
+		elif not os.path.exists(filename):	#See if the file/directory referenced exists
+			filename = None
+		elif os.path.isfile(filename):
+			response = self.URL_FILE
+		elif os.path.isdir(filename):
+			response = self.URL_DIR
+		else:
+			response = self.URL_ERR
 		return filename, response
 
 	def validate_contents(self, parsedurl):
@@ -359,9 +520,13 @@ class URL():
 			retval = False
 		return retval
 
-	def build_filename(self, parsedurl):
-		global basedir
-		return os.path.join(basedir, parsedurl.lstrip("/ "))
+	def build_filename(self):
+		basedir = self._settings["basedir"]
+		parsed = urllib.unquote_plus(self._urlString).lstrip("/ ")
+		filename = None
+		if self.validate_contents(parsed):
+			filename = os.path.join(basedir, parsed)
+		return filename
 
 	def set_ws_key(self, key=None):
 		"""Set the websocket key if this is a websocket url.  Call with no parameter to unset the key."""

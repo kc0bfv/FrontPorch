@@ -4,6 +4,7 @@
 <script type="text/javascript">
 	//This is the directory display stuff here
 	var titletext = "Awesome Fileserver"
+	var dirname = ""
 
 	function setNameDiv(data, dirnamearea) {
 		dirnamearea.innerHTML = data.dirname
@@ -63,6 +64,7 @@
 	}
 
 	function processData(data) {
+		dirname = data.dirname
 		setTitle(data)
 
 		var dirnamearea = document.getElementById("dirnamediv")
@@ -76,32 +78,61 @@
 	}
 
 	//Put the upload script below here
-	function opened(statusbox) {
-		statusbox.innerHTML = "Connected"
-	}
-	function messaged(msg,statusbox) {
-		statusbox.innerHTML = "Message received " + msg.data
-	}
+/*	function messaged(statusbox, msg, ws) {
+		if( ws.was_fnsent() ) {
+			//TODO: make sure the response is a positive one
+			statusbox.innerHTML = "Filename sent"
+			ws.sendFile()
+		} else if( ws.was_filesent() ) {
+			statusbox.innerHTML = "File sent "
+		} else {
+			statusbox.innerHTML = "Other message " + msg.data
+		}
+	}*/
 	function errored(statusbox) {
 		statusbox.innerHTML = "Error received"
 	}
 	function closed(statusbox) {
-		statusbox.innerHTML = "Closed"
+		//statusbox.innerHTML = "Closed"
+	}
+	function refreshDirData() {
+		//window.location.reload()
 	}
 	function send(statusbox, fileselector) {
 		if(fileselector.files.length != 1) {
-			alert("Select one and only one file")
+//			alert("Select one and only one file")
+			return
 		}
+		file = fileselector.files[0]
+
 		statusbox.innerHTML = "Connecting"
-		var ws
-		ws = new WS(
+
+		var ws	//define ws now so I can use it in the different callbacks
+		ws = new UploaderWS( file, dirname,
 				function() {	//on open
-					opened(statusbox)
-					ws.send("Ha ha!")
-					ws.close()
+					statusbox.innerHTML = "Connected"
+					ws.sendFilename()
 				},
 				function(msg) { //on message
-					messaged(msg,statusbox)
+					if( ws.was_fnsent() ) {
+						if( msg.data == "Write Permitted" ) {
+							statusbox.innerHTML = "Filename sent"
+							ws.sendFile()
+						} else {
+							statusbox.innerHTML = "Error sending filename"
+							ws.close()	//close
+						}
+					} else if( ws.was_filesent() ) {
+						if( true ) { //TODO: check for positive response
+							statusbox.innerHTML = "File sent "
+							refreshDirData()
+						} else {
+							statusbox.innerHTML = "Error sending file"
+						}
+						ws.close()	//close
+					} else {
+						statusbox.innerHTML = "Other message " + msg.data
+					}
 				},
 				function() { //on close
 					closed(statusbox)
@@ -109,42 +140,93 @@
 				function() { //on error
 					errored(statusbox)
 				}
-				)	//end new WS call
-		/*socket = wsconnect(
-				function() {	//on open
-					opened(statusbox)
-					wssend(socket, "Ha ha!")
-					wsclose(socket)
-				},
-				function(msg) { //on message
-					messaged(msg,statusbox)
-				},
-				function(cls) { //on close
-					closed(statusbox)
-				},
-				function() { //on error
-					errored(statusbox)
-				}
-				)	//end wsconnect call*/
+				)	//end new UploaderWS call
 	}
-	function WS(onopen, onmessage, onclose, onerror) {
-		var interval = 0
 
-		var socket = new WebSocket("ws://localhost:8080/first/second")
+	//This defines a custom websocket object
+	//Goes through several states - 
+	function UploaderWS(fi, dir, onopen, onmessage, onclose, onerror) {
+		var NOTHINGSENT = 0
+		var FILENAMESENT = 1
+		var FILESENDING = 2
+		var FILESENT = 3
+		var ALLDONE = 4
+
+		var interval = 0
+		var state = NOTHINGSENT
+		var file = fi
+
+		var fr = new FileReader()
+		var readpos = 0
+		
+		if( dir[0] != "/" ) {
+			dir = "/" + dir
+		}
+		if( dir[dir.length-1] != "/" ) {
+			dir = dir + "/"
+		}
+		var wsURL = "ws://" + document.location.host + dir + file.name
+
+		var socket = new WebSocket(wsURL)
 		socket.onopen = onopen
 		socket.onmessage = onmessage
 		socket.onerror = onerror
 
 		socket.onclose = function() {
 			clearInterval(interval)	//Stop the close timer
+			interval = 0
 			onclose()	//Run the requested onclose event
 		}
 
-		this.socket = socket
+		//this.socket = socket
+		//this.state = state
 
 		this.send = function(data){
 			if(typeof socket !== "undefined" && socket.readyState == WebSocket.OPEN) {
 				socket.send(data)
+			}
+		}
+
+		this.was_fnsent = function() {
+			return (state == FILENAMESENT)
+		}
+
+		this.was_filesent = function() {
+			return (state == FILESENT)
+		}
+
+		this.sendFilename = function() {
+			if(typeof socket !== "undefined" && socket.readyState == WebSocket.OPEN && state == NOTHINGSENT) {
+				socket.send("Filesize: " + file.size)
+				state = FILENAMESENT
+			} else {
+				if(state != NOTHINGSENT) {
+					alert("Something was already sent fool!") //TODO:remove
+				}
+			}
+		}
+
+		this.sendFile = function() {
+			if(typeof socket !== "undefined" && socket.readyState == WebSocket.OPEN && state == FILENAMESENT) {
+				state = FILESENDING
+				readpos = 0
+				;(function sliceandserve() {
+					sliced = file.webkitSlice(readpos, readpos+1024)
+					fr.onload = function(e) {
+						var contents = e.target.result
+						//TODO: do something with the contents
+						socket.send(contents)
+						readpos += 1024
+						if( readpos < file.size ) {
+							sliceandserve()
+						}	else {
+							state = FILESENT
+						}
+					}
+					fr.readAsArrayBuffer(sliced)
+				})()
+			} else {
+				alert("other") //TODO:remove
 			}
 		}
 
@@ -155,27 +237,6 @@
 					}
 				}, 100 ) //end setInterval
 		}
-	}
-	function wsconnect(onopen, onmessage, onclose, onerror) {
-		socket = new WebSocket("ws://localhost:8080/first/second")
-		socket.onopen = onopen
-		socket.onmessage = onmessage
-		socket.onclose = onclose
-		socket.onerror = onerror
-		return socket
-	}
-	function wssend(data) {
-		if(typeof socket !== "undefined" && socket.readyState == WebSocket.OPEN) {
-			socket.send(data)
-		}
-	}
-	function wsclose(socket) {
-		interval = setInterval(wstryclose(socket), 100)	//Try to close the socket every 100 ms
-	}
-	function wsclose(socket) {
-		if(typeof socket !== "undefined" && socket.readyState != WebSocket.CLOSED) {
-			socket.close()
-		} 
 	}
 </script>
 </head>
