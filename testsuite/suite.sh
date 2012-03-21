@@ -1,4 +1,5 @@
 #!/bin/bash
+# TODO: Add in tests for error handling
 
 programname="../frontPorch.py"
 tempdir="tempoutput"

@@ -99,7 +99,7 @@ class UserConnection(threading.Thread):
 		elif url.classification == URL.URL_WS:
 			# Handle an upload - all websockets are uploads, all uploads are websocks
 			logging.info("%s: Requested Upload %s", self._addr, url)
-			ws = Websocket.Websocket(self._conn, self._addr, url, settings)
+			ws = Websocket.Websocket(self._conn, self._addr, url, self._settings)
 			ws.handle_websocket()
 		elif url.classification == URL.URL_SYS:
 			logging.info("%s: Requested System File %s", self._addr, url)
@@ -107,7 +107,7 @@ class UserConnection(threading.Thread):
 		else:
 			logging.error("%s: Error with Url Request %s", self._addr, url)
 			if url.websocket_key is not None:
-				ws = Websocket.Websocket(self._conn, self._addr, url, settings)
+				ws = Websocket.Websocket(self._conn, self._addr, url, self._settings)
 				ws.handle_invalid_url()
 			else:
 				self._send_error()

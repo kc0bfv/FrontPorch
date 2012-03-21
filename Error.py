@@ -1,3 +1,7 @@
+"""Defines custom errors for the frontPorch project."""
+
+# TODO: Define all the response messages as constants
+
 class Error(Exception):
 	"""Base class for exceptions in this module."""
 

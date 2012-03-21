@@ -47,7 +47,7 @@ class FileWriter():
 	def finish(self):
 		"""Write the temporary file out to the real file.
 			
-			Throws: StateError
+			Throws: StateError, ProtocolError
 
 		"""
 		# TODO: improve the usefulness of the error responses
@@ -66,9 +66,8 @@ class FileWriter():
 			elif self.test_size() != 0:
 				raise ProtocolError("File wasn't completely received",
 														"Finish Error: -2")
-		except:
-			# Handle any exceptions at the next level up
-			raise
+		except IOError:
+			raise StateError("Error writing file", "Finish Error: -1")
 		finally:
 			self._tempfile.close()
 			self._tempfile = None

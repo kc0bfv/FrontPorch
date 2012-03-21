@@ -36,7 +36,8 @@ class Websocket():
 		self._url = url
 		self._permitted_upload_dir = None
 		if "uploaddir" in settings.keys():
-			self._permitted_upload_dir = settings["uploaddir"]
+			# Make sure there's one / at the end of the directory
+			self._permitted_upload_dir = settings["uploaddir"].rstrip("/ ") + "/"
 		self._filewriter = None
 		self._curbuf=bytearray()	# Store the buffer of received bytes
 
