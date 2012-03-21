@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python -t -3
 # Not compatible with 2.5 - no json module
 
 # Remaining to do: make this easily distributed add in some authenticated
