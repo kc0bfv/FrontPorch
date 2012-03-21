@@ -10,7 +10,7 @@ import logging
 from FileWriter import FileWriter
 from Error import StateError, ProtocolError
 
-class HandleWebsocket():
+class Websocket():
 	"""Handle a websocket connection"""
 
 	# TODO: Make opcode its own object?
@@ -30,10 +30,13 @@ class HandleWebsocket():
 	ST_CLOSE = "close the connection"
 	ST_FINISH = "file finish command received"
 
-	def __init__(self, conn, addr, url):
+	def __init__(self, conn, addr, url, settings):
 		self._conn = conn
 		self._addr = addr
 		self._url = url
+		self._permitted_upload_dir = None
+		if "uploaddir" in settings.keys():
+			self._permitted_upload_dir = settings["uploaddir"]
 		self._filewriter = None
 		self._curbuf=bytearray()	# Store the buffer of received bytes
 
@@ -86,7 +89,7 @@ class HandleWebsocket():
 		if opcode != self.OP_TEXT:
 			raise ProtocolError("Received non-text frame while waiting for filesize",
 													"Invalid: -1")
-		if not data.startswith(b"Filesize: "):
+		elif not data.startswith(b"Filesize: "):
 			raise ProtocolError("Received invalid text while waiting for filesize",
 													"Invalid: -1")
 
@@ -94,9 +97,13 @@ class HandleWebsocket():
 		filesize = data.decode("ascii").replace("Filesize: ", "", 1).strip()
 		if not filesize.isdigit():
 			raise ProtocolError("Invalid filesize received", "Invalid: -1")
-
+		# Make sure the upload is to a permitted destination
+		elif (self._permitted_upload_dir is not None and 
+				not self._url.filename.startswith(self._permitted_upload_dir)):
+			raise ProtocolError("Invalid upload directory, upload denied",
+													"Not Permitted: -2")
 		# Now check if the file exists
-		if not os.path.isfile(self._url.filename):
+		elif not os.path.isfile(self._url.filename):
 			# We're go for file upload!
 			self._send_msg(b"Permitted")
 			self._filewriter = FileWriter(self._url.filename, int(filesize))
