@@ -1,99 +1,129 @@
-from __future__ import print_function #Make print work correctly prior to python 3
+"""Specifies the URL class."""
 
-from string import ascii_letters, digits
-import base64, sys, hashlib, os.path
-
+# Standard library imports
+from __future__ import print_function
+import string
+import base64
+import sys
+import hashlib
+import os.path
 if sys.version_info[0] >= 3:
-	import urllib.parse	#The library got renamed in python3
+	from urllib.parse	import unquote_plus
 else:
-	import urllib
+	from urllib import unquote_plus
+
+# URL Classifications
+URL_ERR = "err"
+URL_WS = "websocket"
+URL_FILE = "file"
+URL_DIR = "dir"
+URL_SYS = "sys"
+
+_WS_MAGIC_KEY = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+_VALID_URL_CHARS = string.ascii_letters + string.digits + "/. -_"
 
 class URL():
-	"""Processes URLs"""
-	valid_chars = ascii_letters + digits + "/. -_"
-	URL_ERR = "err"
-	URL_WS = "websocket"
-	URL_FILE = "file"
-	URL_DIR = "dir"
-	URL_SYS = "sys"	#TODO: implement system files - these are html or js or css or whatever that are in a certain folder
+	"""Store a URL, convert it to a filename, and classify it.
+		
+	Classifications:
+		URL_ERR - This is an invalid URL
+		URL_WS - This URL represents a websocket
+		URL_FILE - This URL requests a file download
+		URL_DIR - This URL requests a directory listing
+		URL_SYS - This URL requests a system file
 
-	_websocket = None	#This var stores whether this was a websocket url or not
-	_key = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"	#This is the protocol's magic value
+	Data items:
+		websocket_key - set/get - The websocket_key specified in a websocket header
+		accept_key - get - The calculated accept key corresponding to websocket_key
+		filename - A server filename corresponding to the requested URL
+		classification - The classification for the URL, values as described above
+
+	"""
 
 	def __init__(self, settings, urlString=""):
-		self._urlString = urlString
-		self._settings = settings
+		"""Initialize a URL object.
 
-	def is_empty(self):
-		return self._urlString == ""
-	
-	def set(self, urlString):
+			settings - a dictionary which requires keys sysdirmagicprefix, basedir,
+								 and systemfiledir.
+
+		"""
 		self._urlString = urlString
+		self._sysdirprefix = settings["sysdirmagicprefix"]
+		self._basedir = settings["basedir"]
+		self._sysfiledir = settings["systemfiledir"]
+		self._filename = None
+		self._classification = None
+		self.websocket_key = None
 
 	def __str__(self):
+		"""Return the text version of the URL."""
 		return self._urlString
 
-	def __repr__(self):
-		return self._urlString
-	
+	__repr__ = __str__
+
 	#TODO: Test for bugs in the classification
-	def resolve(self):
-		filename, isserverfile = self.build_filename()
-		response = self.URL_ERR
+	# Resolve the URL into a filename, and classify it.  Cache the result
+	def _resolve(self):
+		filename, issystemfile = self._build_filename()
+		response = URL_ERR
 		if filename is None:
-			pass	#This happens when the URL was invalid
-		elif self.get_ws_key() is not None:
-			response = self.URL_WS	#Being a websocket overrides others for now.  Don't check for file presence
-		elif not os.path.exists(filename):	#See if the file/directory referenced exists
-			filename = None
-			response = self.URL_ERR
-		elif os.path.isfile(filename):
-			if isserverfile:
-				response = self.URL_SYS
-			else:
-				response = self.URL_FILE
+			pass
+		elif self.websocket_key is not None:
+			response = URL_WS
+		elif os.path.isfile(filename) and issystemfile:
+			response = URL_SYS
+		elif os.path.isfile(filename) and not issystemfile:
+			response = URL_FILE
 		elif os.path.isdir(filename):
-			response = self.URL_DIR
+			response = URL_DIR
 		else:
-			response = self.URL_ERR
-		return filename, response
+			filename = None
+			response = URL_ERR
+		self._filename = filename
+		self._classification = response
 
-	def validate_contents(self, parsedurl):
-		retval = True
-		for char in parsedurl:	#Make sure all the chars in the url are permitted
-			if char not in self.valid_chars:
-				retval = False
-		if (".." in parsedurl) or ("//" in parsedurl):	#Do not permit multiple . or / in a row
-			retval = False
-		return retval
-
-	def build_filename(self):
-		isserverfile = False
-		sysdirprefix = self._settings["sysdirmagicprefix"]
-		basedir = self._settings["basedir"]
-		global sys
-		if sys.version_info[0] >= 3:
-			parsed = urllib.parse.unquote_plus(self._urlString).lstrip("/ ")
-		else:
-			parsed = urllib.unquote_plus(self._urlString).lstrip("/ ")
-		if parsed.startswith(sysdirprefix):	#If this is a request for a system file...
-			parsed = parsed.replace(sysdirprefix, "", 1)	#Remove that part of the filename
-			isserverfile = True
-			basedir = self._settings["systemfiledir"]
+	# Return the corresponding file name, and if it's a system file
+	def _build_filename(self):
+		parsed = unquote_plus(self._urlString).lstrip("/ ")
+		basedir = self._basedir
+		# Handle the case where the URL refers to a system file
+		issystemfile = parsed.startswith(self._sysdirprefix)
+		if issystemfile:
+			parsed = parsed.replace(self._sysdirprefix, "", 1)
+			basedir = self._sysfiledir
 		filename = None
-		if self.validate_contents(parsed):
+		if self._validate_contents(parsed):
 			filename = os.path.join(basedir, parsed)
-		return filename, isserverfile
+		return filename, issystemfile
 
-	def set_ws_key(self, key=None):
-		"""Set the websocket key if this is a websocket url.  Call with no parameter to unset the key."""
-		self._websocket = key
+	# Ensure that the url contains only valid characters
+	def _validate_contents(self, parsedurl):
+		if (parsedurl.strip(_VALID_URL_CHARS) != "" or 
+				(".." in parsedurl) or ("//" in parsedurl)):
+			return False
+		return True
 
-	def get_ws_key(self):
-		return self._websocket
-
-	def gen_ws_accept_key(self):
+	# Generate the accept key for the specified websocket key
+	def _gen_accept_key(self):
+		if self.websocket_key is None:
+			return None
 		sha = hashlib.sha1()
-		sha.update(self._websocket + self._key)
-		encoded = base64.b64encode(sha.digest())
+		sha.update((self.websocket_key + _WS_MAGIC_KEY).encode("ascii"))
+		encoded = base64.b64encode(sha.digest()).decode("ascii")
 		return encoded
+
+	# Return the filename for the specified URL
+	def _get_filename(self):
+		if self._filename is None:
+			self._resolve()
+		return self._filename
+
+	# Return the classification for the specified URL
+	def _get_classification(self):
+		if self._classification is None:
+			self._resolve()
+		return self._classification
+
+	accept_key = property(_gen_accept_key)
+	filename = property(_get_filename)
+	classification = property(_get_classification)

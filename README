@@ -1,6 +1,48 @@
-Tested Browsers:
-	OS X: Firefox 6, Firefox 10, Chrome 17
-	Win XP: Chrome 15
+System Requirements:
+	Confirmed working in:
+		Linux: Chrome 17, Firefox 10
+		OS X: Firefox 6, Firefox 10, Chrome 17
+		Win XP: Chrome 15
 
-Doesn't work in:
-	Safari 5, IE 8
+	Confirmed not working in:
+		Linux: Chrome 10
+		OS X: Safari 5
+		Win XP: IE 8
+	
+	Python versions supported: 2.6 through 3.2
+		Tested in Linux and OS X
+
+Execution:
+	./frontPorch.py
+	Then direct a web browser to "localhost:8080".
+	The default virtual root is ./fileroot
+
+Test Suite:
+	cd testsuite/
+	./suite.sh
+	This test suite tests the common execution paths with python 2.6, 2.7, 3.2.
+If one of those is not available, it will simply throw errors.  Also, this
+suite is tuned for execution on both my Linux and OS X computers.  It may work
+on yours too, I don't know...
+
+Configuration:
+	Configuration is possible through the frontPorch.ini file, or through
+fpDefaults.ini if you copy it to /usr/local/etc/frontPorch/ . Additionally, you
+can specify some options on the command line: see ./frontPorch.py -h .
+
+Security Warnings:
+	I've worked to make sure that nobody can access files outside of the file
+root, and that nobody can upload outside the file root, but no other
+restrictions are placed on uploads.  Also, the program currently allows users
+to follow symlinks within the file root to locations outside the file root
+(this is by design).
+
+Future Work:
+	I'm putting this up on GitHub because I think it's cool, and why not?  It was
+fun to work on, so I plan to add a few things:
+		Upload authentication (using HMAC performed in Javascript)
+		Configurable upload folder limitations
+		Resuming uploads
+		Resuming downloads
+		Smarter directory contents transfer (there's no reason to refresh the
+			entire page to update the directory contents info)

@@ -1,311 +1,35 @@
+<!doctype html public "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
 <html>
 <head>
 	<title>FS</title>
-<script type="text/javascript">
-	//This is the directory display stuff here
-	var titletext = "Awesome Fileserver"
-	var dirname = ""
-
-	function setNameDiv(data, dirnamearea) {
-		dirnamearea.innerHTML = data.dirname
-	}
-
-	function genFilesDiv(data, filesarea) {
-		for(var i=0, len=data.contents.length; i<len; i++) {
-			var item = data.contents[i]
-			var newdiv = document.createElement("div")
-			if( item.type == "file" ) {
-				var humansize = humanizeSize(item.size)
-				newdiv.innerHTML = "<a href=\"" + item.fileurl + "\">" + item.filename + "</a> Size: " + humansize
-			} else if( item.type == "dir" ) {
-				newdiv.innerHTML = "<a href=\"" + item.fileurl + "\">" + item.filename + "/</a>"
-			}
-			filesarea.appendChild(newdiv)
-		}
-	}
-	
-	function genFilesTable(data, filetable) {
-		for(var i=0, len=data.contents.length; i<len; i++) {
-			var item = data.contents[i]
-			var row = filetable.insertRow(filetable.rows.length)
-			var cellCount = 0
-			var filenameCell = row.insertCell(cellCount++)
-			var sizeCell = row.insertCell(cellCount++)
-			var accessedCell = row.insertCell(cellCount++)
-			var modifiedCell = row.insertCell(cellCount++)
-			filenameCell.innerHTML = "<a href=\"" + item.fileurl + "\">" + item.filename + "</a>"
-			accessedCell.innerHTML = item.dateaccessed
-			modifiedCell.innerHTML = item.datemodified
-			if( item.type == "file" ) {
-				sizeCell.innerHTML = humanizeSize(item.size)
-			}
-		}
-	}
-
-	function setTitle(data) {
-		document.title = titletext + " - " + data.dirname
-	}
-
-	function humanizeSize(size) {
-		var human = ""
-		var kb = 1024
-		var mb = kb*1024
-		var gb = mb*1024
-		if(size<1000) {
-			human = Math.floor(size) + "B"
-		} else if(size<mb) {
-			human = Math.floor(size/kb) + "KB"
-		} else if(size<gb) {
-			human = Math.floor(size/mb) + "MB"
-		} else {
-			human = Math.floor(size/gb) + "GB"
-		}
-		return human
-	}
-
-	function processData(data) {
-		dirname = data.dirname
-		setTitle(data)
-
-		var dirnamearea = document.getElementById("dirnamediv")
-		setNameDiv(data,dirnamearea)
-
-//		var filesarea = document.getElementById("filediv")
-//		genFilesDiv(data, filesarea)
-
-		var filestable = document.getElementById("filetable")
-		genFilesTable(data, filestable)
-	}
-
-	//Put the upload script below here
-/*	function messaged(statusbox, msg, ws) {
-		if( ws.was_fnsent() ) {
-			//TODO: make sure the response is a positive one
-			statusbox.innerHTML = "Filename sent"
-			ws.sendFile()
-		} else if( ws.was_filesent() ) {
-			statusbox.innerHTML = "File sent "
-		} else {
-			statusbox.innerHTML = "Other message " + msg.data
-		}
-	}*/
-	/*function errored(statusbox) {
-		statusbox.innerHTML = "Error received"
-	}
-	function closed(statusbox) {
-		//statusbox.innerHTML = "Closed"
-	}
-	function refreshDirData() {
-		window.location.reload()
-	}*/
-	function send(statusbox, fileselector) {
-		if(fileselector.files.length != 1) {
-//			alert("Select one and only one file")
-			return
-		}
-		file = fileselector.files[0]
-
-		statusbox.innerHTML = "Connecting"
-
-		var ws	//define ws now so I can use it in the different callbacks
-		ws = new UploaderWS( file, dirname,
-				function(msg) {	//on open
-					statusbox.innerHTML = msg
-				},
-				function(msg) { //on message
-					statusbox.innerHTML = msg
-				},
-				function(msg) { //on close
-					statusbox.innerHTML = msg
-				},
-				function(msg) { //on error
-					statusbox.innerHTML = msg
-				},
-				function(percent) { //on status update
-					statusbox.innerHTML = "Percent uploaded: " + percent + "%"
-				}
-				)	//end new UploaderWS call
-	}
-
-	//This defines a custom websocket object
-	//Goes through several states - 
-	function UploaderWS(fi, dir, onopen, onmessage, onclose, onerror, onstatusupdate) {
-		var stvalinc = 0
-		var ST_OPENING = stvalinc++			//Connection is attempting to open
-		var ST_OPENED = stvalinc++			//Connection is open
-		var ST_FILESIZE = stvalinc++		//Filesize has been sent
-		var ST_FILESENDING = stvalinc++	//In process of sending segments
-		var ST_FILEFIN = stvalinc++			//All file segments sent, waiting for server OK
-		var	ST_ERROR = stvalinc++				//Some kind of error received
-		var ST_CLOSING = stvalinc++ 		//Trying to close connection
-		var ST_CLOSED = stvalinc++ 			//Connection has been closed
-
-		//Initialization stuff
-		var state =	ST_OPENING
-		var uploader = this
-		var interval = 0	//Stores the timer number from setInterval - used for onclose
-		var file = fi
-		var fr = new FileReader()
-		var readpos = 0	//Stores the current position in the file
-		var oldPercent = 0	//Stores the old percentage, so we can let the user know how far we are
-		if( dir[0] != "/" ) {
-			dir = "/" + dir
-		}
-		if( dir[dir.length-1] != "/" ) {
-			dir = dir + "/"
-		}
-		var wsURL = "ws://" + document.location.host + dir + file.name
-		var socket = new WebSocket(wsURL)	//Attempt to open the websocket
-		socket.onopen = function() {	//After the websocket opens do this
-			state = ST_OPENED
-			outputStatus = uploader.startUpload()	//Start the upload
-			onopen("Opened") //Run the requested onopen event
-		}
-		socket.onmessage = function(message) {	//Whenever websocket receives a message...
-			outputStatus = uploader.handleMessage(message)	//Call the message handler func
-			onmessage(outputStatus)	//Run the requested onmessage event
-		}
-		socket.onclose = function() {	//Whenever the websocket closes...
-			outputStatus = uploader.stopCloseTimer()	//Stop the close timer
-			state = ST_CLOSED
-			onclose("Closed")	//Run the requested onclose event
-		}
-		socket.onerror = function() {	//Whenever the websocket gets an error...
-			state = ST_ERROR
-			outputStatus = uploader.handleError()	//Handle the error - this will run the user supplied function
-		}
-		//End Initialization
-
-		//Object Functions
-		//This calls a user specified function with an updated upload percentage
-		this.updateStatus = function() {	
-			newPercent = Math.floor((readpos / file.size)*100)
-			if( newPercent != oldPercent ) {
-				oldPercent = newPercent
-				onstatusupdate(newPercent)
-			}
-		}
-
-		//Stop the close timer - this is used to make sure the websocket closes
-		this.stopCloseTimer = function() {
-			clearInterval(interval)
-			interval = 0
-		}
-
-		//Begin to upload a file
-		this.startUpload = function() {
-			outputStatus = ""
-			if(this.socketIsValid() && state == ST_OPENED) {
-				socket.send("Filesize: " + file.size)	//Send the file size
-				state = ST_FILESIZE	//Next, wait for a server response
-				outputStatus = "Filesize sent"
-			} else {	//Generally occurs when we're in the wrong state
-				state = ST_ERROR
-				this.handleError("While Starting Upload")
-				outputStatus = "Error sending filesize"
-			}
-			return outputStatus
-		}
-
-		//This thing will handle the different messages the server can send
-		this.handleMessage = function(message) {
-			outputStatus = ""
-			if(state == ST_OPENING || state == ST_OPENED) { //There should be no messages in these states
-				state = ST_ERROR
-				this.handleError("Message Received Before Filesize Sent")
-			} else if(state==ST_FILESIZE) {
-				if(message.data == "Permitted") {	//Good to go!
-					outputStatus = "Sending"
-					state = ST_FILESENDING
-					this.sendFile()
-				} else {	//Some kind of error
-					state = ST_ERROR
-					this.handleError("Before Filesize Response Received: " + message.data)
-				}
-			} else if(state == ST_FILESENDING ) {	//Messages while sending the file are errors
-				state = ST_ERROR
-				this.handleError("While Sending") //TODO:handle better
-			} else if(state == ST_FILEFIN ) {
-				if(message.data == "Finished") {	//Good to go!
-					outputStatus = "File Sent"
-					state = ST_CLOSING
-					this.close()
-					setTimeout(function(){window.location.reload()}, 500)
-				} else {	//Some kind of error
-					state = ST_ERROR
-					this.handleError("After File Finished: " + message.data)
-				}
-			}
-			return outputStatus
-		}
-
-		//The error handler
-		this.handleError = function(message) {
-			outputStatus = "Error Occurred: " + message
-			onerror(outputStatus)
-			state = ST_CLOSING
-			this.close()	//TODO: handle message better
-			return outputStatus
-		}
-
-		this.socketIsValid = function() {
-			return (typeof socket !== "undefined" && socket.readyState == WebSocket.OPEN)
-		}
-
-		this.sendFile = function() {
-			if(this.socketIsValid() && state == ST_FILESENDING) {
-				readpos = 0
-				;(function sliceandserve() {
-					end = Math.min(readpos+1024, file.size)
-					sliced = file.webkitSlice(readpos, end)
-					fr.onload = function(e) {
-						if(uploader.socketIsValid() && state == ST_FILESENDING) {
-							var contents = e.target.result
-							uploader.updateStatus()
-							//Send metadata
-							socket.send("Segment Start: ", readpos, " Segment Finish: ", end)
-							//Send data
-							socket.send(contents)
-							readpos += 1024
-							if( readpos < file.size ) {
-								sliceandserve()
-							}	else {
-								socket.send("File Finish")
-								state = ST_FILEFIN
-							}
-						}
-					}
-					fr.readAsArrayBuffer(sliced)
-				})()
-			} else {
-				state = ST_ERROR
-				this.handle_error("While Sending: within sendFile")
-			}
-		}
-
-		this.close = function() {
-			if( state != ST_CLOSING ) {
-				this.handle_error("While Closing")
-			} else {
-				interval = setInterval( function() {	//Build a function which tries to close the socket every 100ms
-						if(typeof socket !== "undefined" && socket.readyState != WebSocket.CLOSED) {
-							socket.close()
-						}
-					}, 100 ) //end setInterval
-			}
-		}
-	}
-</script>
+	<link rel="stylesheet" type="text/css" href="/(system)/style.css">
 </head>
 <body>
-<input type="button" onclick="send(document.getElementById('status'),document.getElementById('fileselector'))" value="Send">
-<input type="file" id="fileselector">
-<br><span id="status">Waiting</span>
-<div id="dirnamediv">
-</div>
-<div id="filediv">
-<table id="filetable">
-<tr><td>Filename</td><td>Size</td><td>Modified Date</td><td>Created Date</td></tr>
-</table>
+<div id="mainbody">
+	<div id="dirnamediv">
+		<h1>Current Directory: <span id="dirnamespan"></span></h1>
+	</div>
+	<hr>
+	<div id="filediv">
+		<table id="filetable">
+			<tr id="fthead"><td class="ftname">Filename</td><td class="ftsize">Size</td><td class="ftdatem">Modify Date</td><td class="ftdatea">Access Date</td></tr>
+		</table>
+	</div>
+	<hr>
+	<div id="uploadbuttons">
+		<label for="fileselector">Upload</label>
+		<input type="file" id="fileselector">
+		<input type="button" onclick="intermedSend()" value="Send">
+		<input type="button" onclick="abort()" value="Abort">
+	</div>
+	<div id="uploadstatus">
+		<div id="progressOutline" style="border: 1px solid black">
+			<div id="progressPercent" style="background-color: black; width: 0%">&nbsp;</div>
+		</div>
+		<span id="status">Waiting</span>
+	</div>
 </div>
 
+<script type="text/javascript" src="/(system)/base64.js"></script>
+<script type="text/javascript" src="/(system)/UploaderWS.js"></script>
+<script type="text/javascript" src="/(system)/dirdisplayer.js"></script>
