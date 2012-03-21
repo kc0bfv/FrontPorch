@@ -20,3 +20,6 @@ class StateError(Error):
 	def __init__(self, msg, response=None):
 		self.msg = msg
 		self.response = response
+
+class DataError(Error):
+	"""Exception raised when the user specifies invalid data."""

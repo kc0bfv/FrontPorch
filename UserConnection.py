@@ -10,7 +10,7 @@ from datetime import datetime
 # Local imports
 import URL
 import HandleWebsocket
-
+from Error import StateError, ProtocolError
 
 class UserConnection(threading.Thread):
 	"""Handle a user connection.  It does its thing and cleans up when done."""
@@ -37,6 +37,9 @@ class UserConnection(threading.Thread):
 			self._handle_connection()
 		except socket.error:
 			logging.error("%s: Connection closed unexpectedly", self._addr)
+		except:
+			logging.error("%s: Unknown error occurred", self._addr)
+			raise
 		finally:
 			self._conn.close()
 			logging.info("%s: Connection Closed", self._addr)
@@ -49,7 +52,7 @@ class UserConnection(threading.Thread):
 			url = self._process_headers(data)
 		except socket.error:
 			logging.error("%s: Fatal socket timeout", self._addr)
-		except Exception:
+		except ProtocolError:
 			logging.error("%s: Invalid headers specified", self._addr)
 		else:
 			self._respond(url)
@@ -64,7 +67,7 @@ class UserConnection(threading.Thread):
 			# TODO: Unicode URLs?
 			urlstring = words[getlocation + 1]
 		except (ValueError, IndexError):
-			raise Exception("No GET URL specified.")
+			raise ProtocolError("No GET URL specified", "Invalid Headers")
 		else:
 			url = URL.URL(self._settings, urlstring.decode("ascii"))
 
@@ -76,13 +79,13 @@ class UserConnection(threading.Thread):
 		except ValueError:
 			pass  # This was not a websocket connection - no worries!
 		except NameError:
-			raise Exception("NameError storing websocket info.")
+			raise StateError("NameError storing websocket info.")
 		except IndexError:
-			raise Exception("Invalid websocket key specified.")
+			raise ProtocolError("Invalid websocket key specified", "Invalid Headers")
 
 		# Finish up, and raise an error if something strange happened
 		if url is None:
-			raise Exception("No URL object created.")
+			raise StateError("No URL object created.")
 		return url
 
 	# Respond to a user's GET request
@@ -242,22 +245,13 @@ class UserConnection(threading.Thread):
 			size += len(append)
 		# Append the content-length to the header
 		header += "Content-Length: {0:d}\r\n\r\n".format(size)
-		try:
-			self._conn.sendall(header.encode())
-		except socket.error:
-			raise Exception("Socket error while sending header.")
+		self._conn.sendall(header.encode())
 		# Send the file in 4 kb chunks
 		with open(filename, 'rb') as f:
 			data = f.read(4096)
 			while data != b"":
-				try:
-					self._conn.sendall(data)
-				except socket.error:
-					raise Exception("Socket error while sending file contents.")
+				self._conn.sendall(data)
 				data = f.read(4096)
 		# Append the trailer, if one was specified
 		if append is not None:
-			try:
-				self._conn.sendall(append.encode())
-			except:
-				raise Exception("Socket error while sending trailer.")
+			self._conn.sendall(append.encode())

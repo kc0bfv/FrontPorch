@@ -18,6 +18,7 @@ else:
 
 # Local imports
 import UserConnection
+from Error import DataError
 
 # Global variables
 DEFAULTCONFIGFILES = ["/usr/local/etc/frontPorch/fpDefaults.ini",
@@ -35,7 +36,7 @@ def main():
 	settings = None
 	try:
 		settings = _read_config(DEFAULTCONFIGFILES)
-	except Exception:
+	except DataError:
 		_print_usage()
 		return
 	except IOError:
@@ -63,12 +64,11 @@ def main():
 	while not interrupted:
 		try:
 			conn, addr = s.accept()	# Block while waiting for a connection
+			handler = UserConnection.UserConnection(settings, conn, addr)
+			handler.start()
 		except socket.error:
 			# accept will throw this when someone hits ctrl-c - ignore it
 			pass
-		else:
-			handler = UserConnection.UserConnection(settings, conn, addr)
-			handler.start()
 	# When we're "interrupted"
 	s.close()
 
@@ -116,20 +116,20 @@ def _parse_args(args):
 		try:
 			tempport = int(args[1])
 		except ValueError:
-			raise Exception("Invalid command line argument")
+			raise DataError("Invalid command line argument")
 		else:
 			if tempport > 0 and tempport < 65536:
 				settings["listenport"] = tempport
 			else:
-				raise Exception("Invalid port specified")
+				raise DataError("Invalid port specified")
 			nextarg = 2
 	elif cur == "-r" and hasnext and os.path.isdir(args[1]):
 		settings["basedir"] = args[1]
 		nextarg = 2
 	elif cur == "-h":
-		raise Exception("Help argument present")
+		raise DataError("Help argument present")
 	else:
-		raise Exception("Invalid command line argument")
+		raise DataError("Invalid command line argument")
 	
 	# Call the recursion, store the results, return
 	recur_settings, recur_config_files = _parse_args(args[nextarg:])
